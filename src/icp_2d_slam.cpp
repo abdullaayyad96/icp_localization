@@ -75,7 +75,16 @@ void leser_scanner_callback(const sensor_msgs::LaserScan::ConstPtr& input_scan)
       pcl_icp_scan_pointcloud->push_back(temp_point); 
     }  
   }
-  
+  if (initialized)
+  {
+    icp.setInputTarget(pcl_icp_map_pointcloud);
+    icp.setInputSource(pcl_icp_scan_pointcloud);
+    icp.align(*pcl_icp_scan_pointcloud);
+    cout << icp.getFitnessScore() << endl;
+    cout << icp.hasConverged() << endl;
+    cout << icp.getFinalTransformation() << endl;
+    pcl::toROSMsg(*pcl_icp_scan_pointcloud, output_scan_cloud);
+  }
 
 }
 
