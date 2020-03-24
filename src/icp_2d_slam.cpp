@@ -53,7 +53,31 @@ void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
   initialized= true;
 }
 
+void leser_scanner_callback(const sensor_msgs::LaserScan::ConstPtr& input_scan)
+{
+  cout << "laser scan received" << endl;
 
+  pcl_icp_scan_pointcloud->clear();
+
+  pcl_icp_scan_pointcloud->header.frame_id = input_scan->header.frame_id;
+  pcl_icp_scan_pointcloud->height = 1;
+  pcl_icp_scan_pointcloud->width = input_scan->ranges.size();
+
+  pcl::PointXYZ temp_point;
+  
+  for (int i = 0 ; i <  input_scan->ranges.size() ; i++)
+  {
+    if ((input_scan->ranges[i] > input_scan->range_min) && (input_scan->ranges[i] < input_scan->range_max))
+    {
+      temp_point.x = input_scan->ranges[i] * std::cos(input_scan->angle_min + input_scan->angle_increment * i);
+      temp_point.y = input_scan->ranges[i] * std::sin(input_scan->angle_min + input_scan->angle_increment * i);
+      temp_point.z = 0.0;
+      pcl_icp_scan_pointcloud->push_back(temp_point); 
+    }  
+  }
+  
+
+}
 
 int main(int argc, char **argv)
 {
