@@ -23,15 +23,23 @@
 
 using namespace std;
 
- 
+//TODO: read parameters from yaml file
+#define map_topic "map"
+#define laser_scan_topic "scan_unified_filtered"
+#define pose_topic "amcl_pose"
+#define icp_match_thresh 0.5
+
+
+//TODO: organize in class 
 sensor_msgs::PointCloud2 output_map_cloud, output_scan_cloud;
 pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_icp_map_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);
 pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_icp_scan_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);
+geometry_msgs::PoseWithCovarianceStamped icp_pose;
 pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
 Eigen::Matrix4d amcl_transformation_matrix = Eigen::Matrix4d::Identity ();
 Eigen::Matrix4d icp_transformation_matrix = Eigen::Matrix4d::Identity ();
-Eigen::Vector3d map_to_intermediate_trans; 
-Eigen::Matrix3d intermediate_to_map_rot; 
+Eigen::Vector3d intermediate_to_map_trans; 
+Eigen::Matrix3d intermediate_to_map_rot_mat; 
 bool map_initialized = false;
 bool scan_initialized = false;
 
@@ -106,16 +114,35 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
     icp.setInputTarget(pcl_icp_map_pointcloud);
     icp.setInputSource(pcl_icp_scan_pointcloud);
     icp.align(*pcl_icp_scan_pointcloud);
-    cout << icp.getFitnessScore() << endl;
-    cout << icp.hasConverged() << endl;
-    cout << icp.getFinalTransformation() << endl;
-    icp_transformation_matrix = icp.getFinalTransformation().cast<double>();
-    
-    map_to_intermediate_trans = Eigen::Vector3d(icp_transformation_matrix(0,3), icp_transformation_matrix(1,3), icp_transformation_matrix(2,3));
-    intermediate_to_map_rot = icp_transformation_matrix.block(0,0,3,3);
 
-    pcl_icp_scan_pointcloud->header.frame_id = "map";
-    pcl::toROSMsg(*pcl_icp_scan_pointcloud, output_scan_cloud);
+    cout << icp.getFitnessScore() << endl;
+
+    if (icp.getFitnessScore() < icp_match_thresh)
+    {
+      icp_pose = *input_pose;
+      icp_transformation_matrix = icp.getFinalTransformation().cast<double>();
+      
+      intermediate_to_map_trans = Eigen::Vector3d(icp_transformation_matrix(0,3), icp_transformation_matrix(1,3), icp_transformation_matrix(2,3));
+      intermediate_to_map_rot_mat = icp_transformation_matrix.block(0,0,3,3);
+      
+      cout << intermediate_to_map_trans << endl;
+      cout << intermediate_to_map_rot_mat << endl;
+
+      icp_pose.pose.pose.position.x += intermediate_to_map_trans(0);
+      icp_pose.pose.pose.position.y += intermediate_to_map_trans(1);
+      icp_pose.pose.pose.position.z += intermediate_to_map_trans(2);
+
+      intermediate_to_map_rot_mat = amcl_transformation_matrix.block(0,0,3,3) * intermediate_to_map_rot_mat.transpose();
+
+      Eigen::Quaterniond q(intermediate_to_map_rot_mat);   
+      icp_pose.pose.pose.orientation.x = q.x();
+      icp_pose.pose.pose.orientation.y = q.y();
+      icp_pose.pose.pose.orientation.z = q.z();
+      icp_pose.pose.pose.orientation.w = q.w();
+
+      pcl_icp_scan_pointcloud->header.frame_id = "map";
+      pcl::toROSMsg(*pcl_icp_scan_pointcloud, output_scan_cloud);
+    }
   }
 }
 
@@ -124,12 +151,13 @@ int main(int argc, char **argv)
     ros::init(argc, argv, "ICP_SLAM"); 
 
     ros::NodeHandle ros_node;
-    ros::Publisher map_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("map_pcl", 3);
-    ros::Publisher scan_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("scan_pcl", 3);
+    ros::Publisher map_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("icp_map", 3);
+    ros::Publisher scan_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("icp_scan", 3);
+    ros::Publisher pose_publisher = ros_node.advertise<geometry_msgs::PoseWithCovarianceStamped>("icp_pose", 3);
 
-    ros::Subscriber map_sub = ros_node.subscribe("map", 100, map_callback);
-    ros::Subscriber scan_sub = ros_node.subscribe("scan_unified_filtered", 100, leser_scanner_callback);
-    ros::Subscriber pose_sub = ros_node.subscribe("amcl_pose", 100, amcl_pose_callback);
+    ros::Subscriber map_sub = ros_node.subscribe(map_topic, 5, map_callback);
+    ros::Subscriber scan_sub = ros_node.subscribe(laser_scan_topic, 5, leser_scanner_callback);
+    ros::Subscriber pose_sub = ros_node.subscribe(pose_topic, 5, amcl_pose_callback);
 
     ros::Rate loop_rate(500);
 
@@ -139,6 +167,7 @@ int main(int argc, char **argv)
       ros::spinOnce();
       map_pointcloud_publisher.publish(output_map_cloud);
       scan_pointcloud_publisher.publish(output_scan_cloud);
+      pose_publisher.publish(icp_pose);
     }
     
 }
