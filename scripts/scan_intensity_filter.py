@@ -17,7 +17,7 @@ class intensity_filter:
         self.scan = LaserScan
         self.filtered_scan = LaserScan
 
-        self.range_threshold = 7
+        self.range_threshold = 1000
     
 
         self.ros_node = rospy.init_node('scan_intensity_filter', anonymous=True)

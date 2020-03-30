@@ -19,6 +19,12 @@
 #include <tf/transform_broadcaster.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <Eigen/Dense>
+#include <tf2_ros/static_transform_broadcaster.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf/transform_listener.h>
+#include <geometry_msgs/TransformStamped.h>
+#include <cstdio>
+#include <tf2/LinearMath/Quaternion.h>
 
 
 using namespace std;
@@ -28,6 +34,9 @@ using namespace std;
 #define laser_scan_topic "scan_unified_filtered"
 #define pose_topic "amcl_pose"
 #define icp_match_thresh 0.5
+#define map_frame "map"
+#define odometry_frame "odom"
+#define base_frame "base_link"
 
 
 //TODO: organize in class 
@@ -40,8 +49,16 @@ Eigen::Matrix4d amcl_transformation_matrix = Eigen::Matrix4d::Identity ();
 Eigen::Matrix4d icp_transformation_matrix = Eigen::Matrix4d::Identity ();
 Eigen::Vector3d intermediate_to_map_trans; 
 Eigen::Matrix3d intermediate_to_map_rot_mat; 
+Eigen::Vector3d map_to_base_trans; 
+Eigen::Matrix3d map_to_base_rot_mat; 
+Eigen::Vector3d base_to_odom_trans; 
+Eigen::Matrix3d base_to_odom_rot_mat; 
+Eigen::Vector3d map_to_odom_trans; 
+Eigen::Matrix3d map_to_odom_rot_mat; 
 bool map_initialized = false;
 bool scan_initialized = false;
+bool tf_ready = false;
+
 
 void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
 {
@@ -94,7 +111,7 @@ void leser_scanner_callback(const sensor_msgs::LaserScan::ConstPtr& input_scan)
 
 void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& input_pose)
 {
-  cout << "amcl pose received" << endl;
+  //cout << "amcl pose received" << endl;
 
   amcl_transformation_matrix(0,3) = input_pose->pose.pose.position.x;
   amcl_transformation_matrix(1,3) = input_pose->pose.pose.position.y;
@@ -125,22 +142,27 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
       intermediate_to_map_trans = Eigen::Vector3d(icp_transformation_matrix(0,3), icp_transformation_matrix(1,3), icp_transformation_matrix(2,3));
       intermediate_to_map_rot_mat = icp_transformation_matrix.block(0,0,3,3);
       
-      cout << intermediate_to_map_trans << endl;
-      cout << intermediate_to_map_rot_mat << endl;
+      //cout << intermediate_to_map_trans << endl;
+      //cout << intermediate_to_map_rot_mat << endl;
 
       icp_pose.pose.pose.position.x += intermediate_to_map_trans(0);
       icp_pose.pose.pose.position.y += intermediate_to_map_trans(1);
       icp_pose.pose.pose.position.z += intermediate_to_map_trans(2);
 
-      intermediate_to_map_rot_mat = amcl_transformation_matrix.block(0,0,3,3) * intermediate_to_map_rot_mat.transpose();
+      map_to_base_trans << icp_pose.pose.pose.position.x, icp_pose.pose.pose.position.y, icp_pose.pose.pose.position.z;
 
-      Eigen::Quaterniond q(intermediate_to_map_rot_mat);   
+      map_to_base_rot_mat = amcl_transformation_matrix.block(0,0,3,3) * intermediate_to_map_rot_mat.transpose();
+
+      Eigen::Quaterniond q1(map_to_base_rot_mat);   
       icp_pose.pose.pose.orientation.x = q.x();
       icp_pose.pose.pose.orientation.y = q.y();
       icp_pose.pose.pose.orientation.z = q.z();
       icp_pose.pose.pose.orientation.w = q.w();
 
-      pcl_icp_scan_pointcloud->header.frame_id = "map";
+      //publish transform
+      tf_ready = true;
+    
+      pcl_icp_scan_pointcloud->header.frame_id = map_frame;
       pcl::toROSMsg(*pcl_icp_scan_pointcloud, output_scan_cloud);
     }
   }
@@ -159,15 +181,69 @@ int main(int argc, char **argv)
     ros::Subscriber scan_sub = ros_node.subscribe(laser_scan_topic, 5, leser_scanner_callback);
     ros::Subscriber pose_sub = ros_node.subscribe(pose_topic, 5, amcl_pose_callback);
 
-    ros::Rate loop_rate(500);
+
+    //tf
+    static tf2_ros::StaticTransformBroadcaster static_broadcaster;
+    geometry_msgs::TransformStamped map_to_odom_Stamped, base_to_odom_transform;
+    tf2_ros::Buffer tfBuffer;
+    tf2_ros::TransformListener tfListener(tfBuffer);
+
+    ros::Rate loop_rate(300);
+    int iterator = 0;
 
     while(1)
     {
       loop_rate.sleep();
-      ros::spinOnce();
-      map_pointcloud_publisher.publish(output_map_cloud);
-      scan_pointcloud_publisher.publish(output_scan_cloud);
+      iterator++;
+      if ((iterator % 3 ) == 0)
+      {
+        ros::spinOnce();
+        iterator = 0;
+      }
+      //map_pointcloud_publisher.publish(output_map_cloud);
+      //scan_pointcloud_publisher.publish(output_scan_cloud);
       pose_publisher.publish(icp_pose);
+
+      if(tf_ready)
+      {
+        try{
+          base_to_odom_transform = tfBuffer.lookupTransform(base_frame, odometry_frame, ros::Time::now(),  ros::Duration(0.1));
+          base_to_odom_trans(0) = base_to_odom_transform.transform.translation.x;
+          base_to_odom_trans(1) = base_to_odom_transform.transform.translation.y;
+          base_to_odom_trans(2) = base_to_odom_transform.transform.translation.z;
+
+          map_to_odom_trans = map_to_base_trans + map_to_base_rot_mat * base_to_odom_trans;
+
+          Eigen::Quaterniond q2;
+          q2.x() = base_to_odom_transform.transform.rotation.x;
+          q2.y() = base_to_odom_transform.transform.rotation.y;
+          q2.z() = base_to_odom_transform.transform.rotation.z;
+          q2.w() = base_to_odom_transform.transform.rotation.w;
+
+          base_to_odom_rot_mat = q2.normalized().toRotationMatrix();
+
+          map_to_odom_rot_mat = map_to_base_rot_mat * base_to_odom_rot_mat;
+
+          q2 = map_to_odom_rot_mat;
+
+          //publish transform
+          map_to_odom_Stamped.header.stamp = ros::Time::now();
+          map_to_odom_Stamped.header.frame_id = map_frame;
+          map_to_odom_Stamped.child_frame_id = odometry_frame;
+          map_to_odom_Stamped.transform.translation.x = map_to_odom_trans(0);
+          map_to_odom_Stamped.transform.translation.y = map_to_odom_trans(1);
+          map_to_odom_Stamped.transform.translation.z = map_to_odom_trans(2);
+          
+          map_to_odom_Stamped.transform.rotation.x = q2.x();
+          map_to_odom_Stamped.transform.rotation.y = q2.y();
+          map_to_odom_Stamped.transform.rotation.z = q2.z();
+          map_to_odom_Stamped.transform.rotation.w = q2.w();
+          static_broadcaster.sendTransform(map_to_odom_Stamped);
+        }
+        catch (tf2::TransformException &ex) {
+          ROS_WARN("Could NOT transform base_link to odom: %s", ex.what());
+        }
+      }
     }
     
 }
