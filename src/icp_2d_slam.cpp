@@ -25,7 +25,7 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <cstdio>
 #include <tf2/LinearMath/Quaternion.h>
-
+#include <thread>
 
 using namespace std;
 
@@ -168,6 +168,73 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
   }
 }
 
+void ros_callbacks(ros::NodeHandle ros_node)
+{
+  ros::Publisher pose_publisher = ros_node.advertise<geometry_msgs::PoseWithCovarianceStamped>("icp_pose", 3);
+  ros::Rate loop_rate(300);
+  while(ros::ok())
+  {
+    loop_rate.sleep();
+    ros::spinOnce();
+    //map_pointcloud_publisher.publish(output_map_cloud);
+    //scan_pointcloud_publisher.publish(output_scan_cloud);
+    pose_publisher.publish(icp_pose);   
+  }
+}
+
+void publish_tf()
+{
+ //tf
+  static tf2_ros::StaticTransformBroadcaster static_broadcaster;
+  geometry_msgs::TransformStamped map_to_odom_Stamped, base_to_odom_transform;
+  tf2_ros::Buffer tfBuffer;
+  tf2_ros::TransformListener tfListener(tfBuffer); 
+  ros::Rate loop_rate(100);
+  while(ros::ok())
+  {
+    if(tf_ready)
+    {
+      try{
+        base_to_odom_transform = tfBuffer.lookupTransform(base_frame, odometry_frame, ros::Time::now(),  ros::Duration(0.1));
+        base_to_odom_trans(0) = base_to_odom_transform.transform.translation.x;
+        base_to_odom_trans(1) = base_to_odom_transform.transform.translation.y;
+        base_to_odom_trans(2) = base_to_odom_transform.transform.translation.z;
+
+        map_to_odom_trans = map_to_base_trans + map_to_base_rot_mat * base_to_odom_trans;
+
+        Eigen::Quaterniond q2;
+        q2.x() = base_to_odom_transform.transform.rotation.x;
+        q2.y() = base_to_odom_transform.transform.rotation.y;
+        q2.z() = base_to_odom_transform.transform.rotation.z;
+        q2.w() = base_to_odom_transform.transform.rotation.w;
+
+        base_to_odom_rot_mat = q2.normalized().toRotationMatrix();
+
+        map_to_odom_rot_mat = map_to_base_rot_mat * base_to_odom_rot_mat;
+
+        q2 = map_to_odom_rot_mat;
+
+        //publish transform
+        map_to_odom_Stamped.header.stamp = ros::Time::now();
+        map_to_odom_Stamped.header.frame_id = map_frame;
+        map_to_odom_Stamped.child_frame_id = odometry_frame;
+        map_to_odom_Stamped.transform.translation.x = map_to_odom_trans(0);
+        map_to_odom_Stamped.transform.translation.y = map_to_odom_trans(1);
+        map_to_odom_Stamped.transform.translation.z = map_to_odom_trans(2);
+        
+        map_to_odom_Stamped.transform.rotation.x = q2.x();
+        map_to_odom_Stamped.transform.rotation.y = q2.y();
+        map_to_odom_Stamped.transform.rotation.z = q2.z();
+        map_to_odom_Stamped.transform.rotation.w = q2.w();
+        static_broadcaster.sendTransform(map_to_odom_Stamped);
+      }
+      catch (tf2::TransformException &ex) {
+        ROS_WARN("Could NOT transform base_link to odom: %s", ex.what());
+      }
+    }    
+  }
+}
+
 int main(int argc, char **argv)
 {
     ros::init(argc, argv, "ICP_SLAM"); 
@@ -175,75 +242,16 @@ int main(int argc, char **argv)
     ros::NodeHandle ros_node;
     ros::Publisher map_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("icp_map", 3);
     ros::Publisher scan_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("icp_scan", 3);
-    ros::Publisher pose_publisher = ros_node.advertise<geometry_msgs::PoseWithCovarianceStamped>("icp_pose", 3);
-
+    
     ros::Subscriber map_sub = ros_node.subscribe(map_topic, 5, map_callback);
     ros::Subscriber scan_sub = ros_node.subscribe(laser_scan_topic, 5, leser_scanner_callback);
     ros::Subscriber pose_sub = ros_node.subscribe(pose_topic, 5, amcl_pose_callback);
 
+    std::thread process_ros(ros_callbacks, ros_node);
 
-    //tf
-    static tf2_ros::StaticTransformBroadcaster static_broadcaster;
-    geometry_msgs::TransformStamped map_to_odom_Stamped, base_to_odom_transform;
-    tf2_ros::Buffer tfBuffer;
-    tf2_ros::TransformListener tfListener(tfBuffer);
+    std::thread process_tf(publish_tf);
 
-    ros::Rate loop_rate(300);
-    int iterator = 0;
-
-    while(1)
-    {
-      loop_rate.sleep();
-      iterator++;
-      if ((iterator % 3 ) == 0)
-      {
-        ros::spinOnce();
-        iterator = 0;
-      }
-      //map_pointcloud_publisher.publish(output_map_cloud);
-      //scan_pointcloud_publisher.publish(output_scan_cloud);
-      pose_publisher.publish(icp_pose);
-
-      if(tf_ready)
-      {
-        try{
-          base_to_odom_transform = tfBuffer.lookupTransform(base_frame, odometry_frame, ros::Time::now(),  ros::Duration(0.1));
-          base_to_odom_trans(0) = base_to_odom_transform.transform.translation.x;
-          base_to_odom_trans(1) = base_to_odom_transform.transform.translation.y;
-          base_to_odom_trans(2) = base_to_odom_transform.transform.translation.z;
-
-          map_to_odom_trans = map_to_base_trans + map_to_base_rot_mat * base_to_odom_trans;
-
-          Eigen::Quaterniond q2;
-          q2.x() = base_to_odom_transform.transform.rotation.x;
-          q2.y() = base_to_odom_transform.transform.rotation.y;
-          q2.z() = base_to_odom_transform.transform.rotation.z;
-          q2.w() = base_to_odom_transform.transform.rotation.w;
-
-          base_to_odom_rot_mat = q2.normalized().toRotationMatrix();
-
-          map_to_odom_rot_mat = map_to_base_rot_mat * base_to_odom_rot_mat;
-
-          q2 = map_to_odom_rot_mat;
-
-          //publish transform
-          map_to_odom_Stamped.header.stamp = ros::Time::now();
-          map_to_odom_Stamped.header.frame_id = map_frame;
-          map_to_odom_Stamped.child_frame_id = odometry_frame;
-          map_to_odom_Stamped.transform.translation.x = map_to_odom_trans(0);
-          map_to_odom_Stamped.transform.translation.y = map_to_odom_trans(1);
-          map_to_odom_Stamped.transform.translation.z = map_to_odom_trans(2);
-          
-          map_to_odom_Stamped.transform.rotation.x = q2.x();
-          map_to_odom_Stamped.transform.rotation.y = q2.y();
-          map_to_odom_Stamped.transform.rotation.z = q2.z();
-          map_to_odom_Stamped.transform.rotation.w = q2.w();
-          static_broadcaster.sendTransform(map_to_odom_Stamped);
-        }
-        catch (tf2::TransformException &ex) {
-          ROS_WARN("Could NOT transform base_link to odom: %s", ex.what());
-        }
-      }
-    }
+    process_ros.join();
+    process_tf.join();
     
 }
