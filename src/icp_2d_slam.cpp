@@ -247,7 +247,6 @@ void publish_tf(ros::NodeHandle ros_node)
   {
     if(tf_ready)
     {           
-      tf_ready = false;
       try{
         Eigen::Quaterniond q2(map_to_odom_rot_mat);
 
