@@ -66,6 +66,7 @@ bool odom_initialized = false;
 bool amcl_initialized = true;
 bool tf_ready = false;
 bool new_amcl_pose = false;
+pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
 
 
 void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
@@ -88,6 +89,9 @@ void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
       pcl_map_pointcloud->push_back(temp_point); 
     }  
   }
+  voxel_filter.setInputCloud (pcl_map_pointcloud);
+  voxel_filter.setLeafSize (voxel_filter_size, voxel_filter_size, voxel_filter_size);
+  voxel_filter.filter (*pcl_map_pointcloud);
   pcl::toROSMsg(*pcl_map_pointcloud, output_map_cloud);
   map_initialized= true;
 }
@@ -114,6 +118,9 @@ void leser_scanner_callback(const sensor_msgs::LaserScan::ConstPtr& input_scan)
       pcl_scan_pointcloud->push_back(temp_point); 
     }  
   }
+  voxel_filter.setInputCloud (pcl_scan_pointcloud);
+  voxel_filter.setLeafSize (voxel_filter_size, voxel_filter_size, voxel_filter_size);
+  voxel_filter.filter (*pcl_scan_pointcloud);
   scan_initialized = true;
 }
 
