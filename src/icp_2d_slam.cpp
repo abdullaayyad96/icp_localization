@@ -8,6 +8,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/registration/icp.h>
+#include <pcl/filters/crop_box.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <string.h>
 #include <tf2/convert.h>
@@ -41,13 +42,16 @@ using namespace std;
 #define odometry_topic "odom"
 #define base_frame "base_link"
 #define voxel_filter_size 0.1
+#define crop_filter_size 5
 
 
 //TODO: organize in class 
 sensor_msgs::PointCloud2 output_map_cloud, output_scan_cloud;
 pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_map_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);
+pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_map_pointcloud_crop (new pcl::PointCloud<pcl::PointXYZ>);
 pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_scan_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);
 pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_icp_scan_pointcloud (new pcl::PointCloud<pcl::PointXYZ>);
+pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_icp_scan_pointcloud_crop (new pcl::PointCloud<pcl::PointXYZ>);
 geometry_msgs::PoseWithCovarianceStamped icp_pose;
 pcl::IterativeClosestPoint<pcl::PointXYZ, pcl::PointXYZ> icp;
 Eigen::Matrix4d amcl_transformation_matrix = Eigen::Matrix4d::Identity ();
@@ -67,6 +71,7 @@ bool amcl_initialized = true;
 bool tf_ready = false;
 bool new_amcl_pose = false;
 pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
+pcl::CropBox<pcl::PointXYZ> crop_filter;
 
 
 void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
@@ -171,9 +176,22 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
       map_to_base_transformation.block(0,3,3,1) = map_to_odom_trans + map_to_odom_rot_mat * odom_to_base_trans;
     }
     pcl::transformPointCloud(*pcl_scan_pointcloud, *pcl_icp_scan_pointcloud, map_to_base_transformation);
-    icp.setInputTarget(pcl_map_pointcloud);
-    icp.setInputSource(pcl_icp_scan_pointcloud);
-    icp.align(*pcl_icp_scan_pointcloud);
+
+    //crop pointclouds
+    Eigen::Affine3f crop_transformation(map_to_base_transformation.cast<float>());
+    crop_filter.setTransform(crop_transformation.inverse());
+    crop_filter.setMin(Eigen::Vector4f(-crop_filter_size, -crop_filter_size, -crop_filter_size, 1.0));
+    crop_filter.setMax(Eigen::Vector4f(crop_filter_size, crop_filter_size, crop_filter_size, 1.0));
+
+    crop_filter.setInputCloud(pcl_map_pointcloud);
+    crop_filter.filter(*pcl_map_pointcloud_crop);
+    crop_filter.setInputCloud(pcl_map_pointcloud);
+    crop_filter.filter(*pcl_icp_scan_pointcloud_crop);
+    
+    //icp pointcloud
+    icp.setInputTarget(pcl_map_pointcloud_crop);
+    icp.setInputSource(pcl_icp_scan_pointcloud_crop);
+    icp.align(*pcl_icp_scan_pointcloud_crop);
 
     cout << icp.getFitnessScore() << endl;
 
@@ -207,7 +225,7 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
 
       icp_pose.header.frame_id = map_frame;
       pcl_icp_scan_pointcloud->header.frame_id = map_frame;
-      pcl::toROSMsg(*pcl_icp_scan_pointcloud, output_scan_cloud);
+      //pcl::toROSMsg(*pcl_icp_scan_pointcloud, output_scan_cloud);
     }
   }
 }
@@ -223,6 +241,7 @@ void publish_tf(ros::NodeHandle ros_node)
   static tf2_ros::TransformBroadcaster static_broadcaster;
   geometry_msgs::TransformStamped map_to_odom_Stamped;
   ros::Publisher pose_publisher = ros_node.advertise<geometry_msgs::PoseWithCovarianceStamped>("icp_pose", 3);
+  ros::Publisher map_pointcloud_publisher = ros_node.advertise<sensor_msgs::PointCloud2>("map_cloud", 3);
   ros::Rate loop_rate(100);    
   while(ros::ok())
   {
@@ -246,7 +265,7 @@ void publish_tf(ros::NodeHandle ros_node)
         map_to_odom_Stamped.transform.rotation.w = q2.w();
 
         static_broadcaster.sendTransform(map_to_odom_Stamped);
-        //map_pointcloud_publisher.publish(output_map_cloud);
+        map_pointcloud_publisher.publish(output_map_cloud);
         //scan_pointcloud_publisher.publish(output_scan_cloud);
         pose_publisher.publish(icp_pose);
       }
