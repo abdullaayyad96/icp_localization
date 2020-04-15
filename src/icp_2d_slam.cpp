@@ -183,9 +183,6 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
       
       intermediate_to_map_trans = Eigen::Vector3d(icp_transformation_matrix(0,3), icp_transformation_matrix(1,3), icp_transformation_matrix(2,3));
       intermediate_to_map_rot_mat = icp_transformation_matrix.block(0,0,3,3);
-      
-      //cout << intermediate_to_map_trans << endl;
-      //cout << intermediate_to_map_rot_mat << endl;
 
       icp_pose.pose.pose.position.x = intermediate_to_map_trans(0) + amcl_transformation_matrix(0,3);
       icp_pose.pose.pose.position.y = intermediate_to_map_trans(1) + amcl_transformation_matrix(1,3);
@@ -193,7 +190,7 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
       
       map_to_base_trans << icp_pose.pose.pose.position.x, icp_pose.pose.pose.position.y, icp_pose.pose.pose.position.z;
 
-      map_to_base_rot_mat = amcl_transformation_matrix.block(0,0,3,3) * intermediate_to_map_rot_mat.transpose();
+      map_to_base_rot_mat = amcl_transformation_matrix.block(0,0,3,3) * intermediate_to_map_rot_mat;
 
       Eigen::Quaterniond q1(map_to_base_rot_mat);   
       icp_pose.pose.pose.orientation.x = q1.x();
