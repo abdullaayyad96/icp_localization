@@ -8,6 +8,8 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/registration/icp.h>
+#include <pcl/registration/warp_point_rigid_3d.h>
+#include <pcl/registration/transformation_estimation_lm.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <string.h>
@@ -36,13 +38,13 @@ using namespace std;
 #define laser_scan_topic "cob_scan_unifier/scan_unified"
 #define odometry_topic "odom"
 #define pose_topic "amcl_pose"
-#define icp_match_thresh 0.1
+#define icp_match_thresh 0.01
 #define map_frame "map"
 #define odometry_frame "odom"
 #define odometry_topic "odom"
 #define base_frame "base_link"
 #define voxel_filter_size 0.1
-#define crop_filter_size 5
+#define crop_filter_size 2.5
 
 
 //TODO: organize in class 
@@ -72,6 +74,9 @@ bool tf_ready = false;
 bool new_amcl_pose = false;
 pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
 pcl::CropBox<pcl::PointXYZ> crop_filter;
+pcl::registration::WarpPointRigid3D<pcl::PointXYZ, pcl::PointXYZ>::Ptr warp_func (new pcl::registration::WarpPointRigid3D<pcl::PointXYZ, pcl::PointXYZ>);
+
+pcl::registration::TransformationEstimationLM<pcl::PointXYZ, pcl::PointXYZ>::Ptr transform_estimation (new pcl::registration::TransformationEstimationLM<pcl::PointXYZ, pcl::PointXYZ>);
 
 
 void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
@@ -187,10 +192,14 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
     crop_filter.filter(*pcl_map_pointcloud_crop);
     crop_filter.setInputCloud(pcl_map_pointcloud);
     crop_filter.filter(*pcl_icp_scan_pointcloud_crop);
+
+    transform_estimation->setWarpFunction(warp_func);
+    icp.setTransformationEstimation(transform_estimation);
     
     //icp pointcloud
     icp.setInputTarget(pcl_map_pointcloud_crop);
     icp.setInputSource(pcl_icp_scan_pointcloud_crop);
+    icp.setMaximumIterations(10);
     icp.align(*pcl_icp_scan_pointcloud_crop);
 
     cout << icp.getFitnessScore() << endl;
