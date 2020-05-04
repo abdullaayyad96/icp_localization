@@ -1,6 +1,11 @@
 {
     "files.associations": {
         "iostream": "cpp",
-        "ostream": "cpp"
-    }
+        "ostream": "cpp",
+        "complex": "cpp"
+    },
+    "python.autoComplete.extraPaths": [
+        "/home/abdulla/codes/ros_navigation_ws/devel/lib/python2.7/dist-packages",
+        "/opt/ros/melodic/lib/python2.7/dist-packages"
+    ]
 }
