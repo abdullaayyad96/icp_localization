@@ -1,4 +1,5 @@
 #include <ros/ros.h>
+#include <ros/console.h>
 #include <ros/package.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/LaserScan.h>
@@ -8,8 +9,8 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/registration/icp.h>
-#include <pcl/registration/warp_point_rigid_3d.h>
-#include <pcl/registration/transformation_estimation_lm.h>
+// #include <pcl/registration/warp_point_rigid_3d.h>
+// #include <pcl/registration/transformation_estimation_lm.h>
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <string.h>
@@ -29,6 +30,8 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <cstdio>
 #include <tf2/LinearMath/Quaternion.h>
+#include <dynamic_reconfigure/server.h>
+#include <icp_2d_slam/ICPCfgConfig.h>
 #include <thread>
 
 using namespace std;
@@ -38,13 +41,9 @@ using namespace std;
 #define odometry_topic "odom"
 #define laser_scan_topic "cob_scan_unifier/scan_unified"
 #define pose_topic "amcl_pose"
-#define icp_match_thresh 0.5
 #define map_frame "map"
 #define odometry_frame "odom"
 #define base_frame "base_link"
-#define voxel_filter_size 0.1
-#define crop_filter_size 5
-
 
 //TODO: organize in class 
 sensor_msgs::PointCloud2 output_map_cloud, output_scan_cloud;
@@ -72,16 +71,36 @@ bool odom_initialized = false;
 bool amcl_initialized = true;
 bool tf_ready = false;
 bool new_amcl_pose = false;
+//dynamic parameters
+int max_icp_iterations = 10;
+double voxel_filter_size = 0.1;
+double max_correspondance_distance = 1.0;
+double transformation_epsilon = 1e-12;
+double crop_filter_size = 5;
+double icp_match_thresh = 0.5;
 pcl::VoxelGrid<pcl::PointXYZ> voxel_filter;
 pcl::CropBox<pcl::PointXYZ> crop_filter;
-pcl::registration::WarpPointRigid3D<pcl::PointXYZ, pcl::PointXYZ>::Ptr warp_func (new pcl::registration::WarpPointRigid3D<pcl::PointXYZ, pcl::PointXYZ>);
+// pcl::registration::WarpPointRigid3D<pcl::PointXYZ, pcl::PointXYZ>::Ptr warp_func (new pcl::registration::WarpPointRigid3D<pcl::PointXYZ, pcl::PointXYZ>);
 
-pcl::registration::TransformationEstimationLM<pcl::PointXYZ, pcl::PointXYZ>::Ptr transform_estimation (new pcl::registration::TransformationEstimationLM<pcl::PointXYZ, pcl::PointXYZ>);
+// pcl::registration::TransformationEstimationLM<pcl::PointXYZ, pcl::PointXYZ>::Ptr transform_estimation (new pcl::registration::TransformationEstimationLM<pcl::PointXYZ, pcl::PointXYZ>);
 
+
+void callback(icp_2d_slam::ICPCfgConfig &config, uint32_t level) {
+  max_icp_iterations = config.max_iterations;
+  voxel_filter_size = config.voxel_leaf_size;
+  max_correspondance_distance = config.max_correspondance_distance;
+  transformation_epsilon = config.transformation_epsilon;
+  crop_filter_size = config.crop_filter_size;
+  icp_match_thresh = config.max_discrepancy;
+  ROS_INFO("Reconfigure Request: %d %f %f %f %f %f", 
+            config.max_iterations, config.max_correspondance_distance, 
+            config.transformation_epsilon, config.voxel_leaf_size,
+            config.max_discrepancy, config.voxel_leaf_size);
+}
 
 void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
 {
-  //cout << "map received" << endl;
+  // ROS_INFO("Map received");
 
   pcl_map_pointcloud->header.frame_id = input_map->header.frame_id;
   pcl_map_pointcloud->height = input_map->info.height;
@@ -108,7 +127,7 @@ void map_callback(const nav_msgs::OccupancyGrid::ConstPtr& input_map)
 
 void leser_scanner_callback(const sensor_msgs::LaserScan::ConstPtr& input_scan)
 {
-  //cout << "laser scan received" << endl;
+  // ROS_INFO("laser scan received");
 
   pcl_scan_pointcloud->clear();
 
@@ -185,8 +204,6 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
     pcl::transformPointCloud(*pcl_map_pointcloud, *pcl_icp_map_pointcloud, map_to_base_priori_transformation);
 
     //crop pointclouds
-    //Eigen::Affine3f crop_transformation(amcl_transformation_matrix.cast<float>());
-    //crop_filter.setTransform(crop_transformation.inverse());
     crop_filter.setMin(Eigen::Vector4f(-crop_filter_size, -crop_filter_size, -crop_filter_size, 1.0));
     crop_filter.setMax(Eigen::Vector4f(crop_filter_size, crop_filter_size, crop_filter_size, 1.0));
 
@@ -195,29 +212,27 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
     pcl_icp_map_pointcloud_crop->header.frame_id = base_frame;
     pcl::toROSMsg(*pcl_icp_map_pointcloud_crop, output_map_cloud);
     
-    crop_filter.setInputCloud(pcl_icp_scan_pointcloud);
+    crop_filter.setInputCloud(pcl_scan_pointcloud);
     crop_filter.filter(*pcl_icp_scan_pointcloud_crop);
 
     //transform_estimation->setWarpFunction(warp_func);
     //icp.setTransformationEstimation(transform_estimation);
     
     //icp pointcloud
-    icp.setInputTarget(pcl_icp_map_pointcloud);
-    icp.setInputSource(pcl_scan_pointcloud);
-    icp.setMaximumIterations(100);
-    icp.setMaxCorrespondenceDistance(1.0);
-    icp.setTransformationEpsilon(1e-12);
-    icp.align(*pcl_scan_pointcloud);
-    pcl_scan_pointcloud->header.frame_id = base_frame;
-    pcl::toROSMsg(*pcl_scan_pointcloud, output_scan_cloud);
+    icp.setInputTarget(pcl_icp_map_pointcloud_crop);
+    icp.setInputSource(pcl_icp_scan_pointcloud_crop);
+    icp.setMaximumIterations(max_icp_iterations);
+    icp.setMaxCorrespondenceDistance(max_correspondance_distance);
+    icp.setTransformationEpsilon(transformation_epsilon);
+    icp.align(*pcl_icp_scan_pointcloud_crop);
+    pcl_icp_scan_pointcloud_crop->header.frame_id = base_frame;
+    pcl::toROSMsg(*pcl_icp_scan_pointcloud_crop, output_scan_cloud);
 
-    cout << icp.getFitnessScore() << endl;
+    ROS_INFO("ICP matching score: %d", icp.getFitnessScore());
 
     if (icp.getFitnessScore() < icp_match_thresh)
     {
       icp_transformation_matrix = icp.getFinalTransformation().cast<double>();
-      cout << icp_transformation_matrix << endl;
-      cout << "amcl:" << amcl_transformation_matrix << endl;
 
       icp_amcl_rot_mat = icp_transformation_matrix.block(0,0,3,3);
       I_amcl_icp_trans = Eigen::Vector3d(icp_transformation_matrix(0,3), icp_transformation_matrix(1,3), icp_transformation_matrix(2,3));
@@ -225,8 +240,6 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
       map_base_rot_mat = amcl_transformation_matrix.block(0,0,3,3) * icp_amcl_rot_mat;
 
       Eigen::Vector3d M_amcl_icp_trans = (amcl_transformation_matrix.block(0,3,3,1) + amcl_transformation_matrix.block(0,0,3,3) * I_amcl_icp_trans);
-      cout << "here:" << M_amcl_icp_trans << endl;
-      cout << map_base_rot_mat << endl;
       
       icp_pose.pose.pose.position.x = M_amcl_icp_trans(0);
       icp_pose.pose.pose.position.y = M_amcl_icp_trans(1);
@@ -254,6 +267,11 @@ void amcl_pose_callback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr
 
 void ros_callbacks()
 {
+  dynamic_reconfigure::Server<icp_2d_slam::ICPCfgConfig> server;
+  dynamic_reconfigure::Server<icp_2d_slam::ICPCfgConfig>::CallbackType f;
+  f = boost::bind(&callback, _1, _2);
+  server.setCallback(f);
+
   ros::spin();
 }
 
